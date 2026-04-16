@@ -315,10 +315,13 @@ function pickFastModel(provider, requestedModel, piAi) {
 		return { ...models[0], id: requestedModel };
 	}
 
-	const preferredIds =
-		provider === "openai-codex"
-			? ["gpt-5.4-mini", "gpt-5.3-codex-spark", "gpt-5.1", "gpt-5.1-codex-mini"]
-			: ["claude-haiku-4-5", "claude-3-5-haiku-latest", "claude-3-5-haiku-20241022"];
+	if (provider === "openai-codex") {
+		const preferred = models.find((m) => m.id === "gpt-5.4-mini");
+		if (preferred) return preferred;
+		return { ...models[0], id: "gpt-5.4-mini", baseUrl: models[0]?.baseUrl || "https://chatgpt.com/backend-api" };
+	}
+
+	const preferredIds = ["claude-haiku-4-5", "claude-3-5-haiku-latest", "claude-3-5-haiku-20241022"];
 
 	for (const id of preferredIds) {
 		const found = models.find((m) => m.id === id);
