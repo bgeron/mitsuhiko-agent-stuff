@@ -2,7 +2,7 @@
 
 import { spawn, execSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, platform } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -103,9 +103,55 @@ function resolveChromeBinary() {
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     "/Applications/Chromium.app/Contents/MacOS/Chromium",
     "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
+    "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+    "/snap/bin/chromium",
+  ];
+
+  const directMatch = candidates.find((path) => existsSync(path));
+  if (directMatch) {
+    return directMatch;
+  }
+
+  const commandCandidates = [
+    "google-chrome",
+    "google-chrome-stable",
+    "chromium",
+    "chromium-browser",
+  ];
+
+  for (const candidate of commandCandidates) {
+    try {
+      const resolved = execSync(`command -v ${candidate}`, {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim();
+      if (resolved && existsSync(resolved)) {
+        return resolved;
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  return null;
+}
+
+function resolveProfileSourceDir() {
+  const candidates = [
+    join(HOME, "Library", "Application Support", "Google", "Chrome"),
+    join(HOME, ".config", "google-chrome"),
+    join(HOME, ".config", "google-chrome-stable"),
+    join(HOME, ".config", "chromium"),
   ];
 
   return candidates.find((path) => existsSync(path)) || null;
+}
+
+function isContainerLike() {
+  return existsSync("/.dockerenv") || existsSync("/run/.containerenv");
 }
 
 ensureDir(BROWSER_ROOT);
@@ -157,17 +203,11 @@ if (await isDebugEndpointUp()) {
 ensureDir(userDataDir);
 
 if (useProfile) {
-  const sourceProfileDir = join(
-    HOME,
-    "Library",
-    "Application Support",
-    "Google",
-    "Chrome",
-  );
+  const sourceProfileDir = resolveProfileSourceDir();
 
-  if (!existsSync(sourceProfileDir)) {
-    console.error("✗ Could not find your local Chrome profile directory");
-    console.error(`  Expected: ${sourceProfileDir}`);
+  if (!sourceProfileDir) {
+    console.error("✗ Could not find your local Chrome/Chromium profile directory");
+    console.error("  Looked in macOS and Linux default locations.");
     process.exit(1);
   }
 
@@ -209,6 +249,19 @@ const chromeArgs = [
   "--disable-features=ProfilePicker",
   "--enable-automation",
 ];
+
+if (platform() === "linux") {
+  chromeArgs.push("--disable-gpu");
+}
+
+if (isContainerLike()) {
+  chromeArgs.push("--no-sandbox", "--disable-dev-shm-usage", "--headless=new");
+}
+
+const extraArgs = (process.env.BROWSER_EXTRA_ARGS || "").trim();
+if (extraArgs) {
+  chromeArgs.push(...extraArgs.split(/\s+/).filter(Boolean));
+}
 
 const chromeProc = spawn(chromeBinary, chromeArgs, {
   detached: true,
