@@ -67,35 +67,31 @@ Example output:
   ]
 }`;
 
-const CODEX_MODEL_ID = "gpt-5.1-codex-mini";
+const CODEX_MODEL_IDS = ["gpt-5.5", "gpt-5.4-mini", "gpt-5.4", "gpt-5.3-codex", "gpt-5.2", "gpt-5.1-codex-mini"];
 const HAIKU_MODEL_ID = "claude-haiku-4-5";
 
 /**
- * Prefer Codex Mini for extraction when available, otherwise fallback to haiku or the current model.
+ * Prefer an available Codex model for extraction, otherwise fallback to haiku or the current model.
  */
 async function selectExtractionModel(
 	currentModel: Model<Api>,
 	modelRegistry: ModelRegistry,
 ): Promise<Model<Api>> {
-	const codexModel = modelRegistry.find("openai-codex", CODEX_MODEL_ID);
-	if (codexModel) {
+	for (const modelId of CODEX_MODEL_IDS) {
+		const codexModel = modelRegistry.find("openai-codex", modelId);
+		if (!codexModel) continue;
+
 		const auth = await modelRegistry.getApiKeyAndHeaders(codexModel);
-		if (auth.ok) {
-			return codexModel;
-		}
+		if (auth.ok) return codexModel;
 	}
 
 	const haikuModel = modelRegistry.find("anthropic", HAIKU_MODEL_ID);
-	if (!haikuModel) {
-		return currentModel;
+	if (haikuModel) {
+		const auth = await modelRegistry.getApiKeyAndHeaders(haikuModel);
+		if (auth.ok) return haikuModel;
 	}
 
-	const auth = await modelRegistry.getApiKeyAndHeaders(haikuModel);
-	if (auth.ok === false) {
-		return currentModel;
-	}
-
-	return haikuModel;
+	return currentModel;
 }
 
 /**
@@ -447,13 +443,17 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			// Select the best model for extraction (prefer GPT-5.3, then haiku)
+			// Select the best model for extraction.
 			const extractionModel = await selectExtractionModel(ctx.model, ctx.modelRegistry);
 
 			// Run extraction with loader UI
-			const extractionResult = await ctx.ui.custom<ExtractionResult | null>((tui, theme, _kb, done) => {
+			const extraction = await ctx.ui.custom<
+				| { status: "ok"; result: ExtractionResult }
+				| { status: "cancelled" }
+				| { status: "error"; message: string }
+			>((tui, theme, _kb, done) => {
 				const loader = new BorderedLoader(tui, theme, `Extracting questions using ${extractionModel.id}...`);
-				loader.onAbort = () => done(null);
+				loader.onAbort = () => done({ status: "cancelled" });
 
 				const doExtract = async () => {
 					const auth = await ctx.modelRegistry.getApiKeyAndHeaders(extractionModel);
@@ -473,32 +473,49 @@ export default function (pi: ExtensionAPI) {
 					);
 
 					if (response.stopReason === "aborted") {
-						return null;
+						return { status: "cancelled" as const };
 					}
 
 					const responseText = response.content
 						.filter((c): c is { type: "text"; text: string } => c.type === "text")
 						.map((c) => c.text)
-						.join("\n");
+						.join("\n")
+						.trim();
 
-					return parseExtractionResult(responseText);
+					if (!responseText) {
+						return { status: "error" as const, message: `empty response from ${extractionModel.id} (${response.stopReason})` };
+					}
+
+					const result = parseExtractionResult(responseText);
+					if (!result) {
+						const preview = responseText.replace(/\s+/g, " ").slice(0, 160);
+						return { status: "error" as const, message: `could not parse JSON from ${extractionModel.id}: ${preview}` };
+					}
+
+					return { status: "ok" as const, result };
 				};
 
 				doExtract()
 					.then(done)
 					.catch((error) => {
 						const message = error instanceof Error ? error.message : String(error);
-						ctx.ui.notify(`Question extraction failed: ${message}`, "error");
-						done(null);
+						done({ status: "error", message });
 					});
 
 				return loader;
 			});
 
-			if (extractionResult === null) {
+			if (extraction.status === "cancelled") {
 				ctx.ui.notify("Cancelled", "info");
 				return;
 			}
+
+			if (extraction.status === "error") {
+				ctx.ui.notify(`Question extraction failed: ${extraction.message}`, "error");
+				return;
+			}
+
+			const extractionResult = extraction.result;
 
 			if (extractionResult.questions.length === 0) {
 				ctx.ui.notify("No questions found in the last message", "info");
