@@ -67,11 +67,11 @@ Example output:
   ]
 }`;
 
-const CODEX_MODEL_ID = "gpt-5.3";
+const CODEX_MODEL_ID = "gpt-5.1-codex-mini";
 const HAIKU_MODEL_ID = "claude-haiku-4-5";
 
 /**
- * Prefer GPT-5.3 for extraction when available, otherwise fallback to haiku or the current model.
+ * Prefer Codex Mini for extraction when available, otherwise fallback to haiku or the current model.
  */
 async function selectExtractionModel(
 	currentModel: Model<Api>,
@@ -486,7 +486,11 @@ export default function (pi: ExtensionAPI) {
 
 				doExtract()
 					.then(done)
-					.catch(() => done(null));
+					.catch((error) => {
+						const message = error instanceof Error ? error.message : String(error);
+						ctx.ui.notify(`Question extraction failed: ${message}`, "error");
+						done(null);
+					});
 
 				return loader;
 			});
