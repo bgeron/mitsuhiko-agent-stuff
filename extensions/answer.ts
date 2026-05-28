@@ -258,11 +258,13 @@ class QnAComponent implements Component {
 	private submit(): void {
 		this.saveCurrentAnswer();
 
-		// Build the response text
+		// Build the response text, omitting any questions left unanswered.
 		const parts: string[] = [];
 		for (let i = 0; i < this.questions.length; i++) {
+			const a = this.answers[i]?.trim() || "";
+			if (!a) continue;
+
 			const q = this.questions[i];
-			const a = this.answers[i]?.trim() || "(no answer)";
 			parts.push(`Q: ${q.question}`);
 			if (q.context) {
 				parts.push(`> ${q.context}`);
@@ -598,6 +600,11 @@ export default function (pi: ExtensionAPI) {
 
 			if (answersResult === null) {
 				ctx.ui.notify("Cancelled", "info");
+				return;
+			}
+
+			if (!answersResult.trim()) {
+				ctx.ui.notify("No answers provided", "info");
 				return;
 			}
 
