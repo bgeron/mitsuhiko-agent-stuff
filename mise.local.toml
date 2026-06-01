@@ -1,0 +1,7 @@
+[tools]
+git-cliff = "latest"
+node = "latest"
+"npm:pnpm" = "latest"
+"npm:typescript" = "latest"
+pi = "latest"
+shellcheck = "latest"
