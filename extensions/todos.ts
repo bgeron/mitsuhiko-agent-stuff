@@ -90,7 +90,7 @@ interface TodoSettings {
 }
 
 type KeybindingMatcher = {
-	matches: (keyData: string, keybindingId: string) => boolean;
+	matches: (keyData: string, keybindingId: any) => boolean;
 };
 
 const TodoParams = Type.Object({
@@ -447,13 +447,25 @@ class TodoSelectorComponent extends Container implements Focusable {
 	}
 }
 
-class TodoActionMenuComponent extends Container {
+class TodoActionMenuComponent extends Container implements Focusable {
+	private searchInput: Input;
 	private selectList: SelectList;
 	private onSelectCallback: (action: TodoMenuAction) => void;
 	private onCancelCallback: () => void;
+	private keybindings: KeybindingMatcher;
+
+	private _focused = false;
+	get focused(): boolean {
+		return this._focused;
+	}
+	set focused(value: boolean) {
+		this._focused = value;
+		this.searchInput.focused = value;
+	}
 
 	constructor(
 		theme: Theme,
+		keybindings: KeybindingMatcher,
 		todo: TodoRecord,
 		onSelect: (action: TodoMenuAction) => void,
 		onCancel: () => void,
@@ -461,6 +473,7 @@ class TodoActionMenuComponent extends Container {
 		super();
 		this.onSelectCallback = onSelect;
 		this.onCancelCallback = onCancel;
+		this.keybindings = keybindings;
 
 		const closed = isTodoClosed(todo.status);
 		const title = todo.title || "(untitled)";
@@ -489,6 +502,13 @@ class TodoActionMenuComponent extends Container {
 			),
 		);
 
+		this.searchInput = new Input();
+		this.searchInput.onSubmit = () => {
+			const selected = this.selectList.getSelectedItem();
+			if (selected) this.onSelectCallback(selected.value as TodoMenuAction);
+		};
+		this.addChild(this.searchInput);
+
 		this.selectList = new SelectList(options, options.length, {
 			selectedPrefix: (text) => theme.fg("accent", text),
 			selectedText: (text) => theme.fg("accent", text),
@@ -501,12 +521,24 @@ class TodoActionMenuComponent extends Container {
 		this.selectList.onCancel = () => this.onCancelCallback();
 
 		this.addChild(this.selectList);
-		this.addChild(new Text(theme.fg("dim", "Enter to confirm • Esc back")));
+		this.addChild(new Text(theme.fg("dim", "Type to search • Enter to confirm • Esc back")));
 		this.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
 	}
 
 	handleInput(keyData: string): void {
-		this.selectList.handleInput(keyData);
+		const kb = this.keybindings;
+		if (
+			kb.matches(keyData, "tui.select.up") ||
+			kb.matches(keyData, "tui.select.down") ||
+			kb.matches(keyData, "tui.select.confirm") ||
+			kb.matches(keyData, "tui.select.cancel")
+		) {
+			this.selectList.handleInput(keyData);
+			return;
+		}
+
+		this.searchInput.handleInput(keyData);
+		this.selectList.setFilter(this.searchInput.getValue());
 	}
 
 	override invalidate(): void {
@@ -2010,6 +2042,7 @@ export default function todosExtension(pi: ExtensionAPI) {
 					if (!record) return;
 					actionMenu = new TodoActionMenuComponent(
 						theme,
+						keybindings,
 						record,
 						(action) => {
 							void handleActionSelection(record, action);
