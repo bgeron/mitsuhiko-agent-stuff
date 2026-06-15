@@ -198,10 +198,18 @@ function sortTodos(todos: TodoFrontMatter[]): TodoFrontMatter[] {
 	});
 }
 
-function buildTodoSearchText(todo: TodoFrontMatter): string {
+function buildTodoSearchFields(todo: TodoFrontMatter): Array<{ text: string; priority: number }> {
 	const tags = todo.tags.join(" ");
-	const assignment = todo.assigned_to_session ? `assigned:${todo.assigned_to_session}` : "";
-	return `${formatTodoId(todo.id)} ${todo.id} ${todo.title} ${tags} ${todo.status} ${assignment}`.trim();
+	const fields = [
+		{ text: `${formatTodoId(todo.id)} ${todo.id}`, priority: 0 },
+		{ text: todo.title, priority: 1 },
+		{ text: tags, priority: 2 },
+		{ text: todo.status, priority: 3 },
+	];
+	if (todo.assigned_to_session) {
+		fields.push({ text: `assigned:${todo.assigned_to_session}`, priority: 4 });
+	}
+	return fields.filter((field) => field.text.trim());
 }
 
 function filterTodos(todos: TodoFrontMatter[], query: string): TodoFrontMatter[] {
@@ -215,21 +223,34 @@ function filterTodos(todos: TodoFrontMatter[], query: string): TodoFrontMatter[]
 
 	if (tokens.length === 0) return todos;
 
-	const matches: Array<{ todo: TodoFrontMatter; score: number }> = [];
-	for (const todo of todos) {
-		const text = buildTodoSearchText(todo);
+	const matches: Array<{ todo: TodoFrontMatter; score: number; fieldPriority: number; index: number }> = [];
+	for (const [index, todo] of todos.entries()) {
+		const fields = buildTodoSearchFields(todo);
 		let totalScore = 0;
+		let totalFieldPriority = 0;
 		let matched = true;
 		for (const token of tokens) {
-			const result = fuzzyMatch(token, text);
-			if (!result.matches) {
+			let bestMatch: { score: number; priority: number } | null = null;
+			for (const field of fields) {
+				const result = fuzzyMatch(token, field.text);
+				if (!result.matches) continue;
+				if (
+					!bestMatch ||
+					result.score < bestMatch.score ||
+					(result.score === bestMatch.score && field.priority < bestMatch.priority)
+				) {
+					bestMatch = { score: result.score, priority: field.priority };
+				}
+			}
+			if (!bestMatch) {
 				matched = false;
 				break;
 			}
-			totalScore += result.score;
+			totalScore += bestMatch.score;
+			totalFieldPriority += bestMatch.priority;
 		}
 		if (matched) {
-			matches.push({ todo, score: totalScore });
+			matches.push({ todo, score: totalScore, fieldPriority: totalFieldPriority, index });
 		}
 	}
 
@@ -238,10 +259,12 @@ function filterTodos(todos: TodoFrontMatter[], query: string): TodoFrontMatter[]
 			const aClosed = isTodoClosed(a.todo.status);
 			const bClosed = isTodoClosed(b.todo.status);
 			if (aClosed !== bClosed) return aClosed ? 1 : -1;
+			if (a.score !== b.score) return a.score - b.score;
+			if (a.fieldPriority !== b.fieldPriority) return a.fieldPriority - b.fieldPriority;
 			const aAssigned = !aClosed && Boolean(a.todo.assigned_to_session);
 			const bAssigned = !bClosed && Boolean(b.todo.assigned_to_session);
 			if (aAssigned !== bAssigned) return aAssigned ? -1 : 1;
-			return a.score - b.score;
+			return a.index - b.index;
 		})
 		.map((match) => match.todo);
 }
