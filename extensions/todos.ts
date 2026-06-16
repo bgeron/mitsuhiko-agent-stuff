@@ -201,8 +201,8 @@ function sortTodos(todos: TodoFrontMatter[]): TodoFrontMatter[] {
 function buildTodoSearchFields(todo: TodoFrontMatter): Array<{ text: string; priority: number }> {
 	const tags = todo.tags.join(" ");
 	const fields = [
-		{ text: `${formatTodoId(todo.id)} ${todo.id}`, priority: 0 },
-		{ text: todo.title, priority: 1 },
+		{ text: todo.title, priority: 0 },
+		{ text: `${formatTodoId(todo.id)} ${todo.id}`, priority: 1 },
 		{ text: tags, priority: 2 },
 		{ text: todo.status, priority: 3 },
 	];
