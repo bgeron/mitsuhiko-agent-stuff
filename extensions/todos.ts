@@ -256,11 +256,11 @@ function filterTodos(todos: TodoFrontMatter[], query: string): TodoFrontMatter[]
 
 	return matches
 		.sort((a, b) => {
+			if (a.score !== b.score) return a.score - b.score;
+			if (a.fieldPriority !== b.fieldPriority) return a.fieldPriority - b.fieldPriority;
 			const aClosed = isTodoClosed(a.todo.status);
 			const bClosed = isTodoClosed(b.todo.status);
 			if (aClosed !== bClosed) return aClosed ? 1 : -1;
-			if (a.score !== b.score) return a.score - b.score;
-			if (a.fieldPriority !== b.fieldPriority) return a.fieldPriority - b.fieldPriority;
 			const aAssigned = !aClosed && Boolean(a.todo.assigned_to_session);
 			const bAssigned = !bClosed && Boolean(b.todo.assigned_to_session);
 			if (aAssigned !== bAssigned) return aAssigned ? -1 : 1;
