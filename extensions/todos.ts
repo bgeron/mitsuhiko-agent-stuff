@@ -133,6 +133,7 @@ type TodoOverlayAction = "back" | "work";
 type TodoMenuAction =
 	| "work"
 	| "refine"
+	| "mention"
 	| "close"
 	| "reopen"
 	| "release"
@@ -504,6 +505,7 @@ class TodoActionMenuComponent extends Container implements Focusable {
 			{ value: "view", label: "view", description: "View todo" },
 			{ value: "work", label: "work", description: "Work on todo" },
 			{ value: "refine", label: "refine", description: "Refine task" },
+			{ value: "mention", label: "mention", description: "Mention todo in composer" },
 			...(closed
 				? [{ value: "reopen", label: "reopen", description: "Reopen todo" }]
 				: [{ value: "close", label: "close", description: "Close todo" }]),
@@ -1970,6 +1972,11 @@ export default function todosExtension(pi: ExtensionAPI) {
 					if (action === "work") {
 						const title = record.title || "(untitled)";
 						nextPrompt = `work on todo ${formatTodoId(record.id)} "${title}"`;
+						done();
+						return "exit";
+					}
+					if (action === "mention") {
+						nextPrompt = `${formatTodoId(record.id)}: `;
 						done();
 						return "exit";
 					}
