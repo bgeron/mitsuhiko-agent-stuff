@@ -199,16 +199,24 @@ function sortTodos(todos: TodoFrontMatter[]): TodoFrontMatter[] {
 	});
 }
 
-function buildTodoSearchFields(todo: TodoFrontMatter): Array<{ text: string; priority: number }> {
+type TodoSearchField = {
+	text: string;
+	priority: number;
+	penalty: number;
+};
+
+const TODO_SEARCH_CLOSED_PENALTY = 30;
+
+function buildTodoSearchFields(todo: TodoFrontMatter): TodoSearchField[] {
 	const tags = todo.tags.join(" ");
-	const fields = [
-		{ text: todo.title, priority: 0 },
-		{ text: `${formatTodoId(todo.id)} ${todo.id}`, priority: 1 },
-		{ text: tags, priority: 2 },
-		{ text: todo.status, priority: 3 },
+	const fields: TodoSearchField[] = [
+		{ text: todo.title, priority: 0, penalty: 0 },
+		{ text: `${formatTodoId(todo.id)} ${todo.id}`, priority: 1, penalty: 10 },
+		{ text: tags, priority: 2, penalty: 25 },
+		{ text: todo.status, priority: 3, penalty: 40 },
 	];
 	if (todo.assigned_to_session) {
-		fields.push({ text: `assigned:${todo.assigned_to_session}`, priority: 4 });
+		fields.push({ text: `assigned:${todo.assigned_to_session}`, priority: 4, penalty: 80 });
 	}
 	return fields.filter((field) => field.text.trim());
 }
@@ -235,12 +243,13 @@ function filterTodos(todos: TodoFrontMatter[], query: string): TodoFrontMatter[]
 			for (const field of fields) {
 				const result = fuzzyMatch(token, field.text);
 				if (!result.matches) continue;
+				const score = result.score + field.penalty;
 				if (
 					!bestMatch ||
-					result.score < bestMatch.score ||
-					(result.score === bestMatch.score && field.priority < bestMatch.priority)
+					score < bestMatch.score ||
+					(score === bestMatch.score && field.priority < bestMatch.priority)
 				) {
-					bestMatch = { score: result.score, priority: field.priority };
+					bestMatch = { score, priority: field.priority };
 				}
 			}
 			if (!bestMatch) {
@@ -251,7 +260,13 @@ function filterTodos(todos: TodoFrontMatter[], query: string): TodoFrontMatter[]
 			totalFieldPriority += bestMatch.priority;
 		}
 		if (matched) {
-			matches.push({ todo, score: totalScore, fieldPriority: totalFieldPriority, index });
+			const statusPenalty = isTodoClosed(todo.status) ? TODO_SEARCH_CLOSED_PENALTY : 0;
+			matches.push({
+				todo,
+				score: totalScore + statusPenalty,
+				fieldPriority: totalFieldPriority,
+				index,
+			});
 		}
 	}
 
