@@ -202,6 +202,10 @@ class BtwOverlay extends Container implements Focusable {
 	private readonly onSubmitCallback: (value: string) => void;
 	private readonly onDismissCallback: () => void;
 	private _focused = false;
+	private scrollOffset = 0;
+	private transcriptHeight = 0;
+	private transcriptLineCount = 0;
+	private followsTranscript = true;
 
 	get focused(): boolean {
 		return this._focused;
@@ -232,6 +236,7 @@ class BtwOverlay extends Container implements Focusable {
 
 		this.input = new Input();
 		this.input.onSubmit = (value) => {
+			this.scrollToBottom();
 			this.onSubmitCallback(value);
 		};
 		this.input.onEscape = () => {
@@ -245,7 +250,36 @@ class BtwOverlay extends Container implements Focusable {
 			return;
 		}
 
+		if (this.keybindings.matches(data, "tui.select.up")) {
+			this.scrollBy(-1);
+			return;
+		}
+		if (this.keybindings.matches(data, "tui.select.down")) {
+			this.scrollBy(1);
+			return;
+		}
+		if (this.keybindings.matches(data, "tui.select.pageUp")) {
+			this.scrollBy(-(this.transcriptHeight || 1));
+			return;
+		}
+		if (this.keybindings.matches(data, "tui.select.pageDown")) {
+			this.scrollBy(this.transcriptHeight || 1);
+			return;
+		}
+
 		this.input.handleInput(data);
+	}
+
+	private scrollBy(delta: number): void {
+		const maxScroll = Math.max(0, this.transcriptLineCount - this.transcriptHeight);
+		this.scrollOffset = Math.max(0, Math.min(this.scrollOffset + delta, maxScroll));
+		this.followsTranscript = this.scrollOffset === maxScroll;
+		this.tui.requestRender();
+	}
+
+	private scrollToBottom(): void {
+		this.followsTranscript = true;
+		this.tui.requestRender();
 	}
 
 	setDraft(value: string): void {
@@ -279,7 +313,11 @@ class BtwOverlay extends Container implements Focusable {
 
 		// Markdown renders to innerWidth already — no manual wrapping needed
 		const transcript = this.getTranscript(innerWidth, this.theme);
-		const visibleTranscript = transcript.slice(-transcriptHeight);
+		this.transcriptHeight = transcriptHeight;
+		this.transcriptLineCount = transcript.length;
+		const maxScroll = Math.max(0, transcript.length - transcriptHeight);
+		this.scrollOffset = this.followsTranscript ? maxScroll : Math.min(this.scrollOffset, maxScroll);
+		const visibleTranscript = transcript.slice(this.scrollOffset, this.scrollOffset + transcriptHeight);
 		const transcriptPadding = Math.max(0, transcriptHeight - visibleTranscript.length);
 
 		const status = this.getStatus();
@@ -308,7 +346,15 @@ class BtwOverlay extends Container implements Focusable {
 		lines.push(
 			`${this.theme.fg("borderMuted", "│")}${inputLine}${this.theme.fg("borderMuted", "│")}`,
 		);
-		lines.push(this.frameLine(this.theme.fg("dim", "Enter submit · Esc close"), innerWidth));
+		const scrollPosition = transcript.length > transcriptHeight
+			? ` · ${this.scrollOffset + 1}-${Math.min(transcript.length, this.scrollOffset + transcriptHeight)}/${transcript.length}`
+			: "";
+		lines.push(
+			this.frameLine(
+				this.theme.fg("dim", `↑↓ scroll · PgUp/PgDn page · Enter submit · Esc close${scrollPosition}`),
+				innerWidth,
+			),
+		);
 		lines.push(this.borderLine(innerWidth, "bottom"));
 
 		return lines;
@@ -396,7 +442,7 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		const lines: string[] = [];
-		for (const item of thread.slice(-6)) {
+		for (const item of thread) {
 			// User message
 			const userText = item.question.trim().split("\n")[0];
 			lines.push(theme.fg("accent", theme.bold("You: ")) + truncateToWidth(userText, width - 5, "…"));
