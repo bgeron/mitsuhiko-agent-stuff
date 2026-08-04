@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { compareSortKeys, filterTodos, sortTodos } from "../extensions/lib/todo-search.ts";
+import { compareSortKeys, filterTodos, sortTodos } from "../extensions/todos.ts";
 
 function todo(id, title, options = {}) {
 	return {
