@@ -2,6 +2,9 @@
   "name": "mitsupi",
   "version": "1.6.0",
   "description": "Armin's pi coding agent commands, skills, extensions, and themes",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/mitsuhiko/agent-stuff.git"

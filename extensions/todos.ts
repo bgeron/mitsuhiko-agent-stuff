@@ -37,6 +37,12 @@ import fs from "node:fs/promises";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import crypto from "node:crypto";
 import {
+	filterTodos,
+	isTodoClosed,
+	sortTodos,
+	type TodoSearchRecord,
+} from "./lib/todo-search.ts";
+import {
 	Container,
 	type Focusable,
 	Input,
@@ -47,7 +53,6 @@ import {
 	type SelectItem,
 	Text,
 	TUI,
-	fuzzyMatch,
 	matchesKey,
 	truncateToWidth,
 	visibleWidth,
@@ -64,14 +69,7 @@ const DEFAULT_TODO_SETTINGS = {
 };
 const LOCK_TTL_MS = 30 * 60 * 1000;
 
-interface TodoFrontMatter {
-	id: string;
-	title: string;
-	tags: string[];
-	status: string;
-	created_at: string;
-	assigned_to_session?: string;
-}
+type TodoFrontMatter = TodoSearchRecord;
 
 interface TodoRecord extends TodoFrontMatter {
 	body: string;
@@ -177,112 +175,10 @@ function displayTodoId(id: string): string {
 	return formatTodoId(normalizeTodoId(id));
 }
 
-function isTodoClosed(status: string): boolean {
-	return ["closed", "done"].includes(status.toLowerCase());
-}
-
 function clearAssignmentIfClosed(todo: TodoFrontMatter): void {
 	if (isTodoClosed(getTodoStatus(todo))) {
 		todo.assigned_to_session = undefined;
 	}
-}
-
-function sortTodos(todos: TodoFrontMatter[]): TodoFrontMatter[] {
-	return [...todos].sort((a, b) => {
-		const aClosed = isTodoClosed(a.status);
-		const bClosed = isTodoClosed(b.status);
-		if (aClosed !== bClosed) return aClosed ? 1 : -1;
-		const aAssigned = !aClosed && Boolean(a.assigned_to_session);
-		const bAssigned = !bClosed && Boolean(b.assigned_to_session);
-		if (aAssigned !== bAssigned) return aAssigned ? -1 : 1;
-		return (a.created_at || "").localeCompare(b.created_at || "");
-	});
-}
-
-type TodoSearchField = {
-	text: string;
-	priority: number;
-	penalty: number;
-};
-
-const TODO_SEARCH_CLOSED_PENALTY = 30;
-
-function buildTodoSearchFields(todo: TodoFrontMatter): TodoSearchField[] {
-	const tags = todo.tags.join(" ");
-	const fields: TodoSearchField[] = [
-		{ text: todo.title, priority: 0, penalty: 0 },
-		{ text: `${formatTodoId(todo.id)} ${todo.id}`, priority: 1, penalty: 10 },
-		{ text: tags, priority: 2, penalty: 25 },
-		{ text: todo.status, priority: 3, penalty: 40 },
-	];
-	if (todo.assigned_to_session) {
-		fields.push({ text: `assigned:${todo.assigned_to_session}`, priority: 4, penalty: 80 });
-	}
-	return fields.filter((field) => field.text.trim());
-}
-
-function filterTodos(todos: TodoFrontMatter[], query: string): TodoFrontMatter[] {
-	const trimmed = query.trim();
-	if (!trimmed) return todos;
-
-	const tokens = trimmed
-		.split(/\s+/)
-		.map((token) => token.trim())
-		.filter(Boolean);
-
-	if (tokens.length === 0) return todos;
-
-	const matches: Array<{ todo: TodoFrontMatter; score: number; fieldPriority: number; index: number }> = [];
-	for (const [index, todo] of todos.entries()) {
-		const fields = buildTodoSearchFields(todo);
-		let totalScore = 0;
-		let totalFieldPriority = 0;
-		let matched = true;
-		for (const token of tokens) {
-			let bestMatch: { score: number; priority: number } | null = null;
-			for (const field of fields) {
-				const result = fuzzyMatch(token, field.text);
-				if (!result.matches) continue;
-				const score = result.score + field.penalty;
-				if (
-					!bestMatch ||
-					score < bestMatch.score ||
-					(score === bestMatch.score && field.priority < bestMatch.priority)
-				) {
-					bestMatch = { score, priority: field.priority };
-				}
-			}
-			if (!bestMatch) {
-				matched = false;
-				break;
-			}
-			totalScore += bestMatch.score;
-			totalFieldPriority += bestMatch.priority;
-		}
-		if (matched) {
-			const statusPenalty = isTodoClosed(todo.status) ? TODO_SEARCH_CLOSED_PENALTY : 0;
-			matches.push({
-				todo,
-				score: totalScore + statusPenalty,
-				fieldPriority: totalFieldPriority,
-				index,
-			});
-		}
-	}
-
-	return matches
-		.sort((a, b) => {
-			if (a.score !== b.score) return a.score - b.score;
-			if (a.fieldPriority !== b.fieldPriority) return a.fieldPriority - b.fieldPriority;
-			const aClosed = isTodoClosed(a.todo.status);
-			const bClosed = isTodoClosed(b.todo.status);
-			if (aClosed !== bClosed) return aClosed ? 1 : -1;
-			const aAssigned = !aClosed && Boolean(a.todo.assigned_to_session);
-			const bAssigned = !bClosed && Boolean(b.todo.assigned_to_session);
-			if (aAssigned !== bAssigned) return aAssigned ? -1 : 1;
-			return a.index - b.index;
-		})
-		.map((match) => match.todo);
 }
 
 class TodoSelectorComponent extends Container implements Focusable {
@@ -390,7 +286,7 @@ class TodoSelectorComponent extends Container implements Focusable {
 	}
 
 	private applyFilter(query: string): void {
-		this.filteredTodos = filterTodos(this.allTodos, query);
+		this.filteredTodos = filterTodos(this.allTodos, query, this.currentSessionId);
 		this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.filteredTodos.length - 1));
 		this.updateList();
 	}
