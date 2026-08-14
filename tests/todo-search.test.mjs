@@ -24,14 +24,22 @@ test("sort keys compare arbitrary tuple lengths and value types lexicographicall
 	assert.deepEqual(keys.sort(compareSortKeys), [[0], [1, "a"], [1, "a", 2], [1, "b"]]);
 });
 
-test("non-ID completed matches always follow non-completed matches", () => {
+test("non-ID completion statuses always follow non-completed matches", () => {
 	const todos = [
 		todo("aaaaaaaa", "search", { status: "closed" }),
 		todo("bbbbbbbb", "incremental todo list search"),
 		todo("cccccccc", "search", { status: "DoNe" }),
+		todo("dddddddd", "search", { status: "complete" }),
+		todo("eeeeeeee", "search", { status: "COMPLETED" }),
 	];
 
-	assert.deepEqual(ids(filterTodos(todos, "search")), ["bbbbbbbb", "aaaaaaaa", "cccccccc"]);
+	assert.deepEqual(ids(filterTodos(todos, "search")), [
+		"bbbbbbbb",
+		"aaaaaaaa",
+		"cccccccc",
+		"dddddddd",
+		"eeeeeeee",
+	]);
 });
 
 test("all-token fuzzy ID matches form the top bucket even when title scores better", () => {
@@ -103,9 +111,18 @@ test("empty-query ordering remains assigned, open, then completed", () => {
 			createdAt: "2026-01-04T00:00:00Z",
 		}),
 		todo("dddddddd", "older", { createdAt: "2026-01-02T00:00:00Z" }),
+		todo("eeeeeeee", "complete", { status: "complete", createdAt: "2025-01-01T00:00:00Z" }),
+		todo("ffffffff", "completed", { status: "completed", createdAt: "2027-01-01T00:00:00Z" }),
 	];
 	const sorted = sortTodos(todos);
 
-	assert.deepEqual(ids(sorted), ["cccccccc", "dddddddd", "bbbbbbbb", "aaaaaaaa"]);
+	assert.deepEqual(ids(sorted), [
+		"cccccccc",
+		"dddddddd",
+		"bbbbbbbb",
+		"eeeeeeee",
+		"aaaaaaaa",
+		"ffffffff",
+	]);
 	assert.strictEqual(filterTodos(sorted, "", "current-session"), sorted);
 });

@@ -178,7 +178,7 @@ function displayTodoId(id: string): string {
 }
 
 export function isTodoClosed(status: string): boolean {
-	return ["closed", "done"].includes(status.toLowerCase());
+	return ["closed", "done", "complete", "completed"].includes(status.toLowerCase());
 }
 
 export type SortKey = readonly (number | string)[];
