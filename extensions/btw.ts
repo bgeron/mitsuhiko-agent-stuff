@@ -188,6 +188,16 @@ function formatThread(thread: BtwDetails[]): string {
 		.join("\n\n---\n\n");
 }
 
+export function parseBtwCommandArgs(args: string): { fresh: boolean; question: string } {
+	const trimmed = args.trim();
+	const freshMatch = /^--fresh(?:\s+([\s\S]*))?$/.exec(trimmed);
+	if (!freshMatch) {
+		return { fresh: false, question: trimmed };
+	}
+
+	return { fresh: true, question: (freshMatch[1] ?? "").trim() };
+}
+
 function notify(ctx: ExtensionContext | ExtensionCommandContext, message: string, level: "info" | "warning" | "error"): void {
 	if (ctx.hasUI) {
 		ctx.ui.notify(message, level);
@@ -958,9 +968,18 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	pi.registerCommand("btw", {
-		description: "Open a simple BTW side-chat popover. `/btw <text>` asks immediately, `/btw` opens the side thread.",
+		description: "Open the BTW side chat. Use `/btw --fresh [text]` to reset it before opening or asking.",
 		handler: async (args, ctx) => {
-			const question = args.trim();
+			const { fresh, question } = parseBtwCommandArgs(args);
+
+			if (fresh) {
+				await resetThread(ctx, true);
+				await ensureOverlay(ctx);
+				if (question) {
+					await runBtwPrompt(ctx, question);
+				}
+				return;
+			}
 
 			if (!question) {
 				if (thread.length > 0 && ctx.hasUI) {

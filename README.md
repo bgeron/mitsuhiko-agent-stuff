@@ -45,7 +45,7 @@ Skills live in [`skills`](skills). Each skill has a `SKILL.md` plus any helper s
 Pi extensions live in [`extensions`](extensions):
 
 - [`answer.ts`](extensions/answer.ts) - `/answer` plus `ctrl+.` to extract questions from the last assistant message and answer them in an interactive Q&A flow.
-- [`btw.ts`](extensions/btw.ts) - `/btw` side-chat popover for quick tangential questions, with thread restore/reset behavior.
+- [`btw.ts`](extensions/btw.ts) - `/btw` side-chat popover for quick tangential questions; `/btw --fresh [prompt]` resets it before opening or asking.
 - [`continue.ts`](extensions/continue.ts) - `shift+option+enter` sends `continue` only when the agent is stopped.
 - [`control.ts`](extensions/control.ts) - Session control sockets, `/control-sessions`, and the `send_to_session` / `list_sessions` tools for communicating with other live Pi sessions.
 - [`files.ts`](extensions/files.ts) - `/files` browser with git status and session references, plus shortcuts to browse, reveal, and Quick Look referenced files.
