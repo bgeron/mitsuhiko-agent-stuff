@@ -254,6 +254,12 @@ type MatchFailure = {
 
 type MatchFailureReporter = (failure: MatchFailure) => void;
 
+type MatchFailureMetadata = {
+	provider?: string;
+	model?: string;
+	sessionId?: string;
+};
+
 type ApplyEditsOptions = {
 	requireWholeLines?: boolean;
 	onMatchFailure?: MatchFailureReporter;
@@ -261,7 +267,11 @@ type ApplyEditsOptions = {
 
 const EDIT_MATCH_DIAGNOSTIC_LOG = join(getAgentDir(), "edit-match-failures.jsonl");
 
-function writeMatchFailureDiagnostic(syntax: ParsedPlan["mode"], failure: MatchFailure): void {
+function writeMatchFailureDiagnostic(
+	syntax: ParsedPlan["mode"],
+	failure: MatchFailure,
+	metadata: MatchFailureMetadata,
+): void {
 	try {
 		appendFileSync(
 			EDIT_MATCH_DIAGNOSTIC_LOG,
@@ -269,9 +279,9 @@ function writeMatchFailureDiagnostic(syntax: ParsedPlan["mode"], failure: MatchF
 				timestamp: new Date().toISOString(),
 				event: "edit_match_failed",
 				syntax,
-				provider: process.env.PI_PROVIDER,
-				model: process.env.PI_MODEL,
-				sessionId: process.env.PI_SESSION_ID,
+				provider: metadata.provider,
+				model: metadata.model,
+				sessionId: metadata.sessionId,
 				path: failure.path,
 				edit: failure.editIndex + 1,
 				totalEdits: failure.totalEdits,
@@ -955,11 +965,15 @@ function createSnapshotStore(cwd: string, read: (path: string, absolutePath: str
 	};
 }
 
-async function buildRowPlan(text: string, cwd: string, logMatchFailures = false): Promise<ParsedPlan> {
+async function buildRowPlan(
+	text: string,
+	cwd: string,
+	matchFailureMetadata?: MatchFailureMetadata,
+): Promise<ParsedPlan> {
 	const scripts = parseRowScript(text);
 	const store = createSnapshotStore(cwd, readExistingNormalized);
-	const onMatchFailure = logMatchFailures
-		? (failure: MatchFailure) => writeMatchFailureDiagnostic("rows", failure)
+	const onMatchFailure = matchFailureMetadata
+		? (failure: MatchFailure) => writeMatchFailureDiagnostic("rows", failure, matchFailureMetadata)
 		: undefined;
 
 	for (const script of scripts) {
@@ -1186,10 +1200,14 @@ async function buildPatchPlan(text: string, cwd: string): Promise<ParsedPlan> {
 	return { mode: "patch", changes: store.collectChanges("The patch produced no changes.") };
 }
 
-async function buildPlan(text: string, cwd: string, options?: { logMatchFailures?: boolean }): Promise<ParsedPlan> {
+async function buildPlan(
+	text: string,
+	cwd: string,
+	options?: { matchFailureMetadata?: MatchFailureMetadata },
+): Promise<ParsedPlan> {
 	return isPatchLikePayload(text)
 		? buildPatchPlan(text, cwd)
-		: buildRowPlan(text, cwd, options?.logMatchFailures === true);
+		: buildRowPlan(text, cwd, options?.matchFailureMetadata);
 }
 
 async function buildPreviewPlan(text: string, cwd: string, argsComplete: boolean): Promise<ParsedPlan> {
@@ -1606,7 +1624,13 @@ export default function unifiedEditExtension(pi: ExtensionAPI) {
 		async execute(_toolCallId, params: UnifiedEditParams, signal, _onUpdate, ctx) {
 			const text = params.text;
 			if (typeof text !== "string" || text.trim() === "") throw new Error("edit requires a non-empty text payload.");
-			const plan = await buildPlan(text, ctx.cwd, { logMatchFailures: true });
+			const plan = await buildPlan(text, ctx.cwd, {
+				matchFailureMetadata: {
+					provider: ctx.model?.provider,
+					model: ctx.model?.id,
+					sessionId: ctx.sessionManager.getSessionId(),
+				},
+			});
 			try {
 				await preflightPlan(plan, signal);
 			} catch (err: any) {
