@@ -254,44 +254,60 @@ type MatchFailure = {
 
 type MatchFailureReporter = (failure: MatchFailure) => void;
 
-type MatchFailureMetadata = {
-	provider?: string;
-	model?: string;
-	sessionId?: string;
-};
-
 type ApplyEditsOptions = {
 	requireWholeLines?: boolean;
 	onMatchFailure?: MatchFailureReporter;
 };
 
-const EDIT_MATCH_DIAGNOSTIC_LOG = join(getAgentDir(), "edit-match-failures.jsonl");
+type FailedEditPhase = "planning" | "preflight" | "mutation";
 
-function writeMatchFailureDiagnostic(
-	syntax: ParsedPlan["mode"],
-	failure: MatchFailure,
-	metadata: MatchFailureMetadata,
-): void {
+const FAILED_EDIT_LOG = join(getAgentDir(), "edit-failures.jsonl");
+
+function writeFailedEditCall(options: {
+	toolCallId: string;
+	text: string;
+	cwd: string;
+	phase: FailedEditPhase;
+	error: unknown;
+	provider?: string;
+	model?: string;
+	sessionId?: string;
+	matchFailure?: MatchFailure;
+}): void {
 	try {
+		const matchDiagnostics = options.matchFailure
+			? {
+					path: options.matchFailure.path,
+					edit: options.matchFailure.editIndex + 1,
+					totalEdits: options.matchFailure.totalEdits,
+					wholeLines: options.matchFailure.wholeLines,
+					...diagnoseFailedEditMatch(
+						options.matchFailure.content,
+						options.matchFailure.oldText,
+						options.matchFailure.wholeLines,
+					),
+				}
+			: undefined;
 		appendFileSync(
-			EDIT_MATCH_DIAGNOSTIC_LOG,
+			FAILED_EDIT_LOG,
 			`${JSON.stringify({
 				timestamp: new Date().toISOString(),
-				event: "edit_match_failed",
-				syntax,
-				provider: metadata.provider,
-				model: metadata.model,
-				sessionId: metadata.sessionId,
-				path: failure.path,
-				edit: failure.editIndex + 1,
-				totalEdits: failure.totalEdits,
-				wholeLines: failure.wholeLines,
-				...diagnoseFailedEditMatch(failure.content, failure.oldText, failure.wholeLines),
+				event: "edit_failed",
+				provider: options.provider,
+				model: options.model,
+				sessionId: options.sessionId,
+				toolCallId: options.toolCallId,
+				cwd: options.cwd,
+				syntax: isPatchLikePayload(options.text) ? "patch" : "rows",
+				phase: options.phase,
+				error: options.error instanceof Error ? options.error.message : String(options.error),
+				arguments: { text: options.text },
+				matchDiagnostics,
 			})}\n`,
 			"utf8",
 		);
 	} catch {
-		// Match diagnostics must never change edit behavior.
+		// Failure logging must never change edit behavior.
 	}
 }
 
@@ -968,14 +984,10 @@ function createSnapshotStore(cwd: string, read: (path: string, absolutePath: str
 async function buildRowPlan(
 	text: string,
 	cwd: string,
-	matchFailureMetadata?: MatchFailureMetadata,
+	onMatchFailure?: MatchFailureReporter,
 ): Promise<ParsedPlan> {
 	const scripts = parseRowScript(text);
 	const store = createSnapshotStore(cwd, readExistingNormalized);
-	const onMatchFailure = matchFailureMetadata
-		? (failure: MatchFailure) => writeMatchFailureDiagnostic("rows", failure, matchFailureMetadata)
-		: undefined;
-
 	for (const script of scripts) {
 		const snapshot = await store.get(script.path);
 		if (snapshot.current === null) throw new Error(`Cannot edit deleted file ${script.path}.`);
@@ -1203,11 +1215,11 @@ async function buildPatchPlan(text: string, cwd: string): Promise<ParsedPlan> {
 async function buildPlan(
 	text: string,
 	cwd: string,
-	options?: { matchFailureMetadata?: MatchFailureMetadata },
+	options?: { onMatchFailure?: MatchFailureReporter },
 ): Promise<ParsedPlan> {
 	return isPatchLikePayload(text)
 		? buildPatchPlan(text, cwd)
-		: buildRowPlan(text, cwd, options?.matchFailureMetadata);
+		: buildRowPlan(text, cwd, options?.onMatchFailure);
 }
 
 async function buildPreviewPlan(text: string, cwd: string, argsComplete: boolean): Promise<ParsedPlan> {
@@ -1621,23 +1633,41 @@ export default function unifiedEditExtension(pi: ExtensionAPI) {
 		renderShell: "self",
 		prepareArguments: prepareUnifiedArguments,
 
-		async execute(_toolCallId, params: UnifiedEditParams, signal, _onUpdate, ctx) {
+		async execute(toolCallId, params: UnifiedEditParams, signal, _onUpdate, ctx) {
 			const text = params.text;
-			if (typeof text !== "string" || text.trim() === "") throw new Error("edit requires a non-empty text payload.");
-			const plan = await buildPlan(text, ctx.cwd, {
-				matchFailureMetadata: {
+			let phase: FailedEditPhase = "planning";
+			let matchFailure: MatchFailure | undefined;
+			try {
+				if (typeof text !== "string" || text.trim() === "") throw new Error("edit requires a non-empty text payload.");
+				const plan = await buildPlan(text, ctx.cwd, {
+					onMatchFailure: (failure) => {
+						matchFailure = failure;
+					},
+				});
+				phase = "preflight";
+				try {
+					await preflightPlan(plan, signal);
+				} catch (error) {
+					const message = error instanceof Error ? error.message : String(error);
+					throw new Error(`Preflight failed before mutating files.\n${message}`);
+				}
+				phase = "mutation";
+				const details = await applyPlan(plan, signal);
+				return { content: [{ type: "text" as const, text: formatSummary(details) }], details };
+			} catch (error) {
+				writeFailedEditCall({
+					toolCallId,
+					text,
+					cwd: ctx.cwd,
+					phase,
+					error,
 					provider: ctx.model?.provider,
 					model: ctx.model?.id,
 					sessionId: ctx.sessionManager.getSessionId(),
-				},
-			});
-			try {
-				await preflightPlan(plan, signal);
-			} catch (err: any) {
-				throw new Error(`Preflight failed before mutating files.\n${err?.message ?? String(err)}`);
+					matchFailure,
+				});
+				throw error;
 			}
-			const details = await applyPlan(plan, signal);
-			return { content: [{ type: "text" as const, text: formatSummary(details) }], details };
 		},
 
 		renderCall(args, theme, context: RenderContext<UnifiedRenderState>) {
