@@ -19,7 +19,8 @@
   ],
   "pi": {
     "extensions": [
-      "./extensions/*.ts"
+      "./extensions/*.ts",
+      "./extensions/unified-edit/index.ts"
     ],
     "skills": [
       "./skills"

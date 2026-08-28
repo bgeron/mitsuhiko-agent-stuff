@@ -4,6 +4,7 @@ All notable changes to agent-stuff are documented here.
 
 ## Unreleased
 
+* Added failed-hunk whitespace diagnostics to the unified edit extension, including inferred spaces-per-tab match counts, and packaged the extension as a directory so helper imports work through symlink installs.
 * Fixed the notify extension leaking OSC 8 hyperlink text into fullscreen prompt editors.
 
 ## 1.6.0

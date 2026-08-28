@@ -11,16 +11,19 @@
 import {
 	generateDiffString,
 	generateUnifiedPatch,
+	getAgentDir,
 	renderDiff,
 	withFileMutationQueue,
 	type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
 import { Box, Container, getCapabilities, hyperlink, Spacer, Text, type Component } from "@earendil-works/pi-tui";
-import { constants } from "node:fs";
+import { appendFileSync, constants } from "node:fs";
 import { access, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, resolve as resolvePath } from "node:path";
+import { dirname, isAbsolute, join, resolve as resolvePath } from "node:path";
 import { pathToFileURL } from "node:url";
+
+import { diagnoseFailedEditMatch, normalizeForFuzzyMatch } from "./edit-match-diagnostics.ts";
 
 const TOOL_DESCRIPTION = `Edit files with one marked row edit script.
 
@@ -222,18 +225,6 @@ function restoreLineEndings(text: string, ending: "\r\n" | "\n"): string {
 	return ending === "\r\n" ? text.replace(/\n/g, "\r\n") : text;
 }
 
-function normalizeForFuzzyMatch(text: string): string {
-	return text
-		.normalize("NFKC")
-		.split("\n")
-		.map((line) => line.trimEnd())
-		.join("\n")
-		.replace(/[\u2018\u2019\u201A\u201B]/g, "'")
-		.replace(/[\u201C\u201D\u201E\u201F]/g, '"')
-		.replace(/[\u2010\u2011\u2012\u2013\u2014\u2015\u2212]/g, "-")
-		.replace(/[\u00A0\u2002-\u200A\u202F\u205F\u3000]/g, " ");
-}
-
 function splitLinesWithEndings(content: string): string[] {
 	return content.match(/[^\n]*\n|[^\n]+/g) ?? [];
 }
@@ -251,6 +242,48 @@ interface MatchedEdit {
 }
 
 type TextReplacement = Pick<MatchedEdit, "matchIndex" | "matchLength" | "newText">;
+
+type MatchFailure = {
+	path: string;
+	content: string;
+	oldText: string;
+	wholeLines: boolean;
+	editIndex: number;
+	totalEdits: number;
+};
+
+type MatchFailureReporter = (failure: MatchFailure) => void;
+
+type ApplyEditsOptions = {
+	requireWholeLines?: boolean;
+	onMatchFailure?: MatchFailureReporter;
+};
+
+const EDIT_MATCH_DIAGNOSTIC_LOG = join(getAgentDir(), "edit-match-failures.jsonl");
+
+function writeMatchFailureDiagnostic(syntax: ParsedPlan["mode"], failure: MatchFailure): void {
+	try {
+		appendFileSync(
+			EDIT_MATCH_DIAGNOSTIC_LOG,
+			`${JSON.stringify({
+				timestamp: new Date().toISOString(),
+				event: "edit_match_failed",
+				syntax,
+				provider: process.env.PI_PROVIDER,
+				model: process.env.PI_MODEL,
+				sessionId: process.env.PI_SESSION_ID,
+				path: failure.path,
+				edit: failure.editIndex + 1,
+				totalEdits: failure.totalEdits,
+				wholeLines: failure.wholeLines,
+				...diagnoseFailedEditMatch(failure.content, failure.oldText, failure.wholeLines),
+			})}\n`,
+			"utf8",
+		);
+	} catch {
+		// Match diagnostics must never change edit behavior.
+	}
+}
 
 function getLineSpans(content: string): LineSpan[] {
 	let offset = 0;
@@ -457,7 +490,7 @@ function applyEditsToNormalizedContent(
 	normalizedContent: string,
 	edits: Edit[],
 	path: string,
-	options?: { requireWholeLines?: boolean },
+	options?: ApplyEditsOptions,
 ): { baseContent: string; newContent: string } {
 	const wholeLines = options?.requireWholeLines === true;
 	const normalizedEdits = edits.map((edit) => ({
@@ -480,6 +513,14 @@ function applyEditsToNormalizedContent(
 		const edit = normalizedEdits[i];
 		const matchResult = fuzzyFindText(replacementBaseContent, edit.oldText, wholeLines);
 		if (!matchResult.found) {
+			options?.onMatchFailure?.({
+				path,
+				content: normalizedContent,
+				oldText: edit.oldText,
+				wholeLines,
+				editIndex: i,
+				totalEdits: normalizedEdits.length,
+			});
 			throw getNotFoundError(path, i, normalizedEdits.length);
 		}
 
@@ -774,12 +815,20 @@ function rowEditFromPair(pair: { oldLines: string[]; newLines: string[] }, delet
 	return { oldText, newText };
 }
 
-function applyReplaceOperation(content: string, path: string, op: Extract<RawRowOperation, { kind: "replace" }>): string {
+function applyReplaceOperation(
+	content: string,
+	path: string,
+	op: Extract<RawRowOperation, { kind: "replace" }>,
+	onMatchFailure?: MatchFailureReporter,
+): string {
 	const pairs = getReplacePairs(path, op);
 	const hasDeletionOnly = pairs.some((pair) => pair.newLines.length === 0);
 	const primaryEdits = pairs.map((pair) => rowEditFromPair(pair, true));
 	try {
-		return applyEditsToNormalizedContent(content, primaryEdits, path, { requireWholeLines: true }).newContent;
+		return applyEditsToNormalizedContent(content, primaryEdits, path, {
+			requireWholeLines: true,
+			onMatchFailure: hasDeletionOnly ? undefined : onMatchFailure,
+		}).newContent;
 	} catch (err) {
 		if (!hasDeletionOnly) throw err;
 		// If a deletion-only block targets the last line of a file without a
@@ -787,7 +836,10 @@ function applyReplaceOperation(content: string, path: string, op: Extract<RawRow
 		// match.  Fall back to replacing just the row text, still requiring line
 		// boundaries.
 		const fallbackEdits = pairs.map((pair) => rowEditFromPair(pair, false));
-		return applyEditsToNormalizedContent(content, fallbackEdits, path, { requireWholeLines: true }).newContent;
+		return applyEditsToNormalizedContent(content, fallbackEdits, path, {
+			requireWholeLines: true,
+			onMatchFailure,
+		}).newContent;
 	}
 }
 
@@ -795,6 +847,7 @@ function applyAnchorInsertOperation(
 	content: string,
 	path: string,
 	op: Extract<RawRowOperation, { kind: "insertBeforeAnchor" | "insertAfterAnchor" }>,
+	onMatchFailure?: MatchFailureReporter,
 ): string {
 	const opName = op.kind === "insertBeforeAnchor" ? "@INS.BEFORE" : "@INS.AFTER";
 	const groups = op.groups.filter(
@@ -809,10 +862,16 @@ function applyAnchorInsertOperation(
 	const newText = op.kind === "insertBeforeAnchor" ? `${insertText}\n${anchorText}` : `${anchorText}\n${insertText}`;
 	return applyEditsToNormalizedContent(content, [{ oldText: anchorText, newText }], path, {
 		requireWholeLines: true,
+		onMatchFailure,
 	}).newContent;
 }
 
-function applyRowOperations(path: string, content: string, ops: RawRowOperation[]): string {
+function applyRowOperations(
+	path: string,
+	content: string,
+	ops: RawRowOperation[],
+	onMatchFailure?: MatchFailureReporter,
+): string {
 	const doc = splitContent(content);
 
 	for (const op of ops) {
@@ -841,8 +900,8 @@ function applyRowOperations(path: string, content: string, ops: RawRowOperation[
 			case "insertBeforeAnchor":
 			case "insertAfterAnchor": {
 				const next = op.kind === "replace"
-					? applyReplaceOperation(joinContent(doc), path, op)
-					: applyAnchorInsertOperation(joinContent(doc), path, op);
+					? applyReplaceOperation(joinContent(doc), path, op, onMatchFailure)
+					: applyAnchorInsertOperation(joinContent(doc), path, op, onMatchFailure);
 				Object.assign(doc, splitContent(next));
 				break;
 			}
@@ -896,14 +955,17 @@ function createSnapshotStore(cwd: string, read: (path: string, absolutePath: str
 	};
 }
 
-async function buildRowPlan(text: string, cwd: string): Promise<ParsedPlan> {
+async function buildRowPlan(text: string, cwd: string, logMatchFailures = false): Promise<ParsedPlan> {
 	const scripts = parseRowScript(text);
 	const store = createSnapshotStore(cwd, readExistingNormalized);
+	const onMatchFailure = logMatchFailures
+		? (failure: MatchFailure) => writeMatchFailureDiagnostic("rows", failure)
+		: undefined;
 
 	for (const script of scripts) {
 		const snapshot = await store.get(script.path);
 		if (snapshot.current === null) throw new Error(`Cannot edit deleted file ${script.path}.`);
-		snapshot.current = applyRowOperations(script.path, snapshot.current, script.ops);
+		snapshot.current = applyRowOperations(script.path, snapshot.current, script.ops, onMatchFailure);
 	}
 
 	return { mode: "rows", changes: store.collectChanges("The row edit script produced no changes.") };
@@ -1124,8 +1186,10 @@ async function buildPatchPlan(text: string, cwd: string): Promise<ParsedPlan> {
 	return { mode: "patch", changes: store.collectChanges("The patch produced no changes.") };
 }
 
-async function buildPlan(text: string, cwd: string): Promise<ParsedPlan> {
-	return isPatchLikePayload(text) ? buildPatchPlan(text, cwd) : buildRowPlan(text, cwd);
+async function buildPlan(text: string, cwd: string, options?: { logMatchFailures?: boolean }): Promise<ParsedPlan> {
+	return isPatchLikePayload(text)
+		? buildPatchPlan(text, cwd)
+		: buildRowPlan(text, cwd, options?.logMatchFailures === true);
 }
 
 async function buildPreviewPlan(text: string, cwd: string, argsComplete: boolean): Promise<ParsedPlan> {
@@ -1542,7 +1606,7 @@ export default function unifiedEditExtension(pi: ExtensionAPI) {
 		async execute(_toolCallId, params: UnifiedEditParams, signal, _onUpdate, ctx) {
 			const text = params.text;
 			if (typeof text !== "string" || text.trim() === "") throw new Error("edit requires a non-empty text payload.");
-			const plan = await buildPlan(text, ctx.cwd);
+			const plan = await buildPlan(text, ctx.cwd, { logMatchFailures: true });
 			try {
 				await preflightPlan(plan, signal);
 			} catch (err: any) {
