@@ -72,15 +72,7 @@ Example output:
   ]
 }`;
 
-const CODEX_MODEL_IDS = [
-	"gpt-5.4-mini",
-	"gpt-5.3-codex-spark",
-	"gpt-5.5",
-	"gpt-5.4",
-	"gpt-5.3-codex",
-	"gpt-5.2",
-	"gpt-5.1-codex-mini",
-];
+const CODEX_MODEL_IDS = ["gpt-5.4-mini", "gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.3-codex"];
 const HAIKU_MODEL_ID = "claude-haiku-4-5";
 
 /**
@@ -258,13 +250,11 @@ class QnAComponent implements Component {
 	private submit(): void {
 		this.saveCurrentAnswer();
 
-		// Build the response text, omitting any questions left unanswered.
+		// Build the response text
 		const parts: string[] = [];
 		for (let i = 0; i < this.questions.length; i++) {
-			const a = this.answers[i]?.trim() || "";
-			if (!a) continue;
-
 			const q = this.questions[i];
+			const a = this.answers[i]?.trim() || "(no answer)";
 			parts.push(`Q: ${q.question}`);
 			if (q.context) {
 				parts.push(`> ${q.context}`);
@@ -538,31 +528,16 @@ export default function (pi: ExtensionAPI) {
 						return { status: "cancelled" };
 					}
 					if (response.stopReason === "error") {
-						return {
-							status: "error",
-							message: response.errorMessage ?? `question extraction failed using ${extractionModel.id}`,
-						};
+						return { status: "error", message: response.errorMessage ?? "question extraction failed" };
 					}
 
 					const responseText = response.content
 						.filter((c): c is { type: "text"; text: string } => c.type === "text")
 						.map((c) => c.text)
-						.join("\n")
-						.trim();
-					if (!responseText) {
-						return {
-							status: "error",
-							message: `empty response from ${extractionModel.id} (${response.stopReason})`,
-						};
-					}
-
+						.join("\n");
 					const result = parseExtractionResult(responseText);
 					if (!result) {
-						const preview = responseText.replace(/\s+/g, " ").slice(0, 160);
-						return {
-							status: "error",
-							message: `could not parse JSON from ${extractionModel.id}: ${preview}`,
-						};
+						return { status: "error", message: "question extraction returned invalid JSON" };
 					}
 
 					return { status: "ok", result };
@@ -600,11 +575,6 @@ export default function (pi: ExtensionAPI) {
 
 			if (answersResult === null) {
 				ctx.ui.notify("Cancelled", "info");
-				return;
-			}
-
-			if (!answersResult.trim()) {
-				ctx.ui.notify("No answers provided", "info");
 				return;
 			}
 
