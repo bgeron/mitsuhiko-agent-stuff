@@ -10,7 +10,7 @@
  * 4. Submits the compiled answers when done
  */
 
-import { complete, type Model, type Api, type UserMessage } from "@earendil-works/pi-ai";
+import { complete, parseJsonWithRepair, type Model, type Api, type UserMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { BorderedLoader } from "@earendil-works/pi-coding-agent";
 import {
@@ -34,6 +34,11 @@ interface ExtractedQuestion {
 interface ExtractionResult {
 	questions: ExtractedQuestion[];
 }
+
+type ExtractionOutcome =
+	| { status: "ok"; result: ExtractionResult }
+	| { status: "cancelled" }
+	| { status: "error"; message: string };
 
 const SYSTEM_PROMPT = `You are a question extractor. Given text from a conversation, extract any questions that need answering.
 
@@ -67,11 +72,20 @@ Example output:
   ]
 }`;
 
-const CODEX_MODEL_IDS = ["gpt-5.4-mini", "gpt-5.5", "gpt-5.4", "gpt-5.3-codex", "gpt-5.2", "gpt-5.1-codex-mini"];
+const CODEX_MODEL_IDS = [
+	"gpt-5.4-mini",
+	"gpt-5.3-codex-spark",
+	"gpt-5.5",
+	"gpt-5.4",
+	"gpt-5.3-codex",
+	"gpt-5.2",
+	"gpt-5.1-codex-mini",
+];
 const HAIKU_MODEL_ID = "claude-haiku-4-5";
 
 /**
- * Prefer an available Codex model for extraction, otherwise fallback to haiku or the current model.
+ * Prefer a fast configured Codex model for extraction, then haiku, then the
+ * current model.
  */
 async function selectExtractionModel(
 	currentModel: Model<Api>,
@@ -79,43 +93,93 @@ async function selectExtractionModel(
 ): Promise<Model<Api>> {
 	for (const modelId of CODEX_MODEL_IDS) {
 		const codexModel = modelRegistry.find("openai-codex", modelId);
-		if (!codexModel) continue;
-
-		const auth = await modelRegistry.getApiKeyAndHeaders(codexModel);
-		if (auth.ok) return codexModel;
+		if (codexModel) {
+			const auth = await modelRegistry.getApiKeyAndHeaders(codexModel);
+			if (auth.ok) {
+				return codexModel;
+			}
+		}
 	}
 
 	const haikuModel = modelRegistry.find("anthropic", HAIKU_MODEL_ID);
-	if (haikuModel) {
-		const auth = await modelRegistry.getApiKeyAndHeaders(haikuModel);
-		if (auth.ok) return haikuModel;
+	if (!haikuModel) {
+		return currentModel;
 	}
 
-	return currentModel;
+	const auth = await modelRegistry.getApiKeyAndHeaders(haikuModel);
+	if (auth.ok === false) {
+		return currentModel;
+	}
+
+	return haikuModel;
+}
+
+function toExtractedQuestion(value: unknown): ExtractedQuestion | null {
+	if (typeof value !== "object" || value === null) {
+		return null;
+	}
+	const record = value as Record<string, unknown>;
+	const question = record.question;
+	const context = record.context;
+	if (typeof question !== "string") {
+		return null;
+	}
+	if (context !== undefined && context !== null && typeof context !== "string") {
+		return null;
+	}
+	return typeof context === "string" && context.length > 0 ? { question, context } : { question };
+}
+
+function toExtractionResult(value: unknown): ExtractionResult | null {
+	if (typeof value !== "object" || value === null) {
+		return null;
+	}
+	const record = value as Record<string, unknown>;
+	if (!Array.isArray(record.questions)) {
+		return null;
+	}
+	const questions: ExtractedQuestion[] = [];
+	for (const question of record.questions) {
+		const extractedQuestion = toExtractedQuestion(question);
+		if (!extractedQuestion) {
+			return null;
+		}
+		questions.push(extractedQuestion);
+	}
+	return { questions };
 }
 
 /**
- * Parse the JSON response from the LLM
+ * Parse the JSON response from the LLM.
  */
 function parseExtractionResult(text: string): ExtractionResult | null {
-	try {
-		// Try to find JSON in the response (it might be wrapped in markdown code blocks)
-		let jsonStr = text;
-
-		// Remove markdown code block if present
-		const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-		if (jsonMatch) {
-			jsonStr = jsonMatch[1].trim();
-		}
-
-		const parsed = JSON.parse(jsonStr);
-		if (parsed && Array.isArray(parsed.questions)) {
-			return parsed as ExtractionResult;
-		}
-		return null;
-	} catch {
-		return null;
+	const candidates: string[] = [];
+	const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+	if (jsonMatch) {
+		candidates.push(jsonMatch[1].trim());
 	}
+
+	const trimmed = text.trim();
+	candidates.push(trimmed);
+
+	const firstBrace = trimmed.indexOf("{");
+	const lastBrace = trimmed.lastIndexOf("}");
+	if (firstBrace !== -1 && lastBrace > firstBrace) {
+		candidates.push(trimmed.slice(firstBrace, lastBrace + 1));
+	}
+
+	for (const candidate of candidates) {
+		try {
+			const result = toExtractionResult(parseJsonWithRepair<unknown>(candidate));
+			if (result) {
+				return result;
+			}
+		} catch {
+			// Try the next candidate.
+		}
+	}
+
+	return null;
 }
 
 /**
@@ -447,18 +511,14 @@ export default function (pi: ExtensionAPI) {
 			const extractionModel = await selectExtractionModel(ctx.model, ctx.modelRegistry);
 
 			// Run extraction with loader UI
-			const extraction = await ctx.ui.custom<
-				| { status: "ok"; result: ExtractionResult }
-				| { status: "cancelled" }
-				| { status: "error"; message: string }
-			>((tui, theme, _kb, done) => {
+			const extractionOutcome = await ctx.ui.custom<ExtractionOutcome>((tui, theme, _kb, done) => {
 				const loader = new BorderedLoader(tui, theme, `Extracting questions using ${extractionModel.id}...`);
 				loader.onAbort = () => done({ status: "cancelled" });
 
-				const doExtract = async () => {
+				const doExtract = async (): Promise<ExtractionOutcome> => {
 					const auth = await ctx.modelRegistry.getApiKeyAndHeaders(extractionModel);
 					if (auth.ok === false) {
-						throw new Error(auth.error);
+						return { status: "error", message: auth.error };
 					}
 					const userMessage: UserMessage = {
 						role: "user",
@@ -473,7 +533,13 @@ export default function (pi: ExtensionAPI) {
 					);
 
 					if (response.stopReason === "aborted") {
-						return { status: "cancelled" as const };
+						return { status: "cancelled" };
+					}
+					if (response.stopReason === "error") {
+						return {
+							status: "error",
+							message: response.errorMessage ?? `question extraction failed using ${extractionModel.id}`,
+						};
 					}
 
 					const responseText = response.content
@@ -481,23 +547,28 @@ export default function (pi: ExtensionAPI) {
 						.map((c) => c.text)
 						.join("\n")
 						.trim();
-
 					if (!responseText) {
-						return { status: "error" as const, message: `empty response from ${extractionModel.id} (${response.stopReason})` };
+						return {
+							status: "error",
+							message: `empty response from ${extractionModel.id} (${response.stopReason})`,
+						};
 					}
 
 					const result = parseExtractionResult(responseText);
 					if (!result) {
 						const preview = responseText.replace(/\s+/g, " ").slice(0, 160);
-						return { status: "error" as const, message: `could not parse JSON from ${extractionModel.id}: ${preview}` };
+						return {
+							status: "error",
+							message: `could not parse JSON from ${extractionModel.id}: ${preview}`,
+						};
 					}
 
-					return { status: "ok" as const, result };
+					return { status: "ok", result };
 				};
 
 				doExtract()
 					.then(done)
-					.catch((error) => {
+					.catch((error: unknown) => {
 						const message = error instanceof Error ? error.message : String(error);
 						done({ status: "error", message });
 					});
@@ -505,18 +576,16 @@ export default function (pi: ExtensionAPI) {
 				return loader;
 			});
 
-			if (extraction.status === "cancelled") {
+			if (extractionOutcome.status === "cancelled") {
 				ctx.ui.notify("Cancelled", "info");
 				return;
 			}
-
-			if (extraction.status === "error") {
-				ctx.ui.notify(`Question extraction failed: ${extraction.message}`, "error");
+			if (extractionOutcome.status === "error") {
+				ctx.ui.notify(`Question extraction failed: ${extractionOutcome.message}`, "error");
 				return;
 			}
 
-			const extractionResult = extraction.result;
-
+			const extractionResult = extractionOutcome.result;
 			if (extractionResult.questions.length === 0) {
 				ctx.ui.notify("No questions found in the last message", "info");
 				return;

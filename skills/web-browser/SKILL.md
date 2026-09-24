@@ -1,38 +1,63 @@
 ---
 name: web-browser
-description: "Browser automation via Chrome/Chromium CDP. Use when you need to navigate pages, inspect DOM state, click or pick elements, dismiss cookie dialogs, emulate devices, or take screenshots."
+description: "Automate and interact with web pages through Chrome or Chromium using the Chrome DevTools Protocol (CDP): navigate, click, fill forms, inspect content, take screenshots, and debug console or network activity. Use when an agent needs a real browser. Prefer headless Chrome unless visible browser interaction is required."
 license: Stolen from Mario
 ---
 
-# Web Browser
+# Web Browser Skill
 
-CDP helpers for browser automation.
+Minimal CDP tools for collaborative site exploration.
 
-## Start
-
-```bash
-./scripts/start.js
-./scripts/start.js --profile
-./scripts/start.js --reset-profile
-```
-
-Optional env vars:
+## Start Chrome (Prefer Headless)
 
 ```bash
-BROWSER_BIN=/path/to/chrome ./scripts/start.js
-BROWSER_DEBUG_PORT=9333 ./scripts/start.js
-BROWSER_EXTRA_ARGS='--window-size=1440,1200' ./scripts/start.js
+./scripts/start.js --headless            # Recommended: isolated reusable profile
+./scripts/start.js --headless --profile  # Headless with a copy of your profile
+./scripts/start.js                       # Visible browser window when needed
+./scripts/start.js --headless --reset-profile  # Clear cached profile before launch
 ```
 
-Notes:
-- Uses an isolated profile under `~/.cache/agent-web/browser/`.
-- On Linux/container setups, `start.js` auto-detects common Chromium paths and adds container-safe flags when needed.
-- `--profile` copies a local Chrome/Chromium profile into the isolated cache.
+Starts Chrome with remote debugging (default port `:9222`). **Agents should use `--headless` by default** because it is less disruptive and supports navigation, evaluation, screenshots, emulation, and logging. User extensions are disabled for headless launches; a copied profile still provides its cookies and other browser state, but extension-based features are unavailable. Headed launches continue to load extensions normally. Use headed mode only when a person needs to see or interact with the browser, such as for `pick.js`, manual authentication, or debugging a headless-specific difference.
 
-Stop the managed browser:
+The start script only reuses a running browser when its profile and launch settings match. Stop the running skill browser before switching between headless and headed mode. Changing the debugging port does **not** isolate the profile: startup refuses to modify a profile already used on another port and preserves Chrome's profile locks.
+
+Profile behavior:
+- Default mode uses: `~/.cache/agent-web/browser/fresh-profile`
+- `--profile` mode uses: `~/.cache/agent-web/browser/profile-copy`
+- The skill **does not attach to your live Chrome profile directly**
+- If `:9222` is already used by an unknown instance, start will fail instead of reusing it
+
+If Chrome is installed in a non-standard location, set:
+
+```bash
+BROWSER_BIN=/path/to/chrome ./scripts/start.js --headless
+```
+
+Optional launch overrides:
+
+```bash
+BROWSER_DEBUG_PORT=9333 ./scripts/start.js --headless
+BROWSER_EXTRA_ARGS='--window-size=1440,1200' ./scripts/start.js --headless
+```
+
+On Linux, `start.js` disables GPU acceleration. In containers it also adds the
+sandbox and shared-memory compatibility flags commonly required by Chromium.
+
+## Stop Chrome
+
+```bash
+./scripts/stop.js                         # Stop skill Chrome on :9222
+BROWSER_DEBUG_PORT=9333 ./scripts/stop.js  # Stop skill Chrome on :9333
+./scripts/stop.js --all                   # Stop all skill Chrome instances
+```
+
+Works for headless and headed browsers. Only processes using the skill's cached profiles are stopped, not your regular Chrome. Shutdown preserves cookies and other cached state; it never force-kills Chrome. Stop before using `--reset-profile`.
+
+To switch to a visible browser:
 
 ```bash
 ./scripts/stop.js
+./scripts/start.js
 ```
 
 ## Navigate
@@ -42,24 +67,9 @@ Stop the managed browser:
 ./scripts/nav.js https://example.com --new
 ```
 
-## Evaluate JavaScript
+Navigate current tab or open new tab.
 
-```bash
-./scripts/eval.js 'document.title'
-./scripts/eval.js 'document.querySelectorAll("a").length'
-```
-
-Use single quotes around the JavaScript when possible.
-
-## Screenshots
-
-```bash
-./scripts/screenshot.js
-./scripts/screenshot.js --full-page
-./scripts/screenshot.js --device iphone-14
-```
-
-## Device emulation
+## Device Emulation (Mobile)
 
 ```bash
 ./scripts/emulate.js --list
@@ -68,37 +78,90 @@ Use single quotes around the JavaScript when possible.
 ./scripts/emulate.js --reset
 ```
 
-The active emulation applies to `nav.js`, `eval.js`, `pick.js`, `dismiss-cookies.js`, and `screenshot.js`.
+Set an active device emulation preference (viewport, DPR, touch, UA) for browser skill commands. Use `--reset` to clear.
 
-## Pick elements
+Commands like `nav.js`, `eval.js`, `pick.js`, `dismiss-cookies.js`, and `screenshot.js` automatically apply the active preference.
+
+## Evaluate JavaScript
+
+```bash
+./scripts/eval.js 'document.title'
+./scripts/eval.js 'document.querySelectorAll("a").length'
+./scripts/eval.js 'document.querySelector("button")?.click(); "clicked"'
+./scripts/eval.js 'await Promise.resolve(document.title)'
+./scripts/eval.js 'JSON.stringify(Array.from(document.querySelectorAll("a")).map(a => ({ text: a.textContent.trim(), href: a.href })).filter(link => !link.href.startsWith("https://")))'
+```
+
+Execute JavaScript in the active tab. Input can be an expression or statement list; the console-style completion value is printed and promises/top-level `await` are awaited. Be careful with string escaping, best to use single quotes.
+
+## Screenshot
+
+```bash
+./scripts/screenshot.js
+./scripts/screenshot.js --full-page
+./scripts/screenshot.js --device iphone-14
+./scripts/screenshot.js --device pixel-7 --full-page
+```
+
+Takes a screenshot and returns a temp file path.
+
+- Default: current viewport
+- `--full-page`: captures full document height
+- `--device <preset>`: temporary mobile emulation for that screenshot only
+
+## Pick Elements
 
 ```bash
 ./scripts/pick.js "Click the submit button"
 ```
 
-## Dismiss cookie dialogs
+Interactive element picker. Click to select, Cmd/Ctrl+Click for multi-select, Enter to finish. This requires headed Chrome; launch `start.js` without `--headless`.
+
+## Dismiss Cookie Dialogs
 
 ```bash
-./scripts/dismiss-cookies.js
-./scripts/dismiss-cookies.js --reject
+./scripts/dismiss-cookies.js          # Accept cookies
+./scripts/dismiss-cookies.js --reject # Reject cookies (where possible)
 ```
 
-Typical flow:
+Automatically dismisses EU cookie consent dialogs.
+
+Run after navigating to a page:
+```bash
+./scripts/nav.js https://example.com && ./scripts/dismiss-cookies.js
+```
+
+## Quick Mobile Debug Flow
 
 ```bash
-./scripts/start.js
+./scripts/start.js --headless
 ./scripts/nav.js https://example.com
+./scripts/emulate.js iphone-14
+./scripts/nav.js https://example.com      # reload with mobile UA
 ./scripts/dismiss-cookies.js
 ./scripts/screenshot.js --full-page
 ```
 
-## Logs
+## Background Logging (Console + Errors + Network)
 
-`start.js` also starts background logging under `~/.cache/agent-web/logs/`.
+Automatically started by `start.js` and writes JSONL logs to:
 
+```
+~/.cache/agent-web/logs/YYYY-MM-DD/<targetId>.jsonl
+```
+
+Manually start:
 ```bash
 ./scripts/watch.js
-./scripts/logs-tail.js
-./scripts/logs-tail.js --follow
+```
+
+Tail latest log:
+```bash
+./scripts/logs-tail.js           # dump current log and exit
+./scripts/logs-tail.js --follow  # keep following
+```
+
+Summarize network responses:
+```bash
 ./scripts/net-summary.js
 ```
