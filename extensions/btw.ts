@@ -182,6 +182,12 @@ function buildSeedMessages(ctx: ExtensionContext, thread: BtwDetails[]): Message
 	return seed;
 }
 
+export function seedSessionManager(sessionManager: SessionManager, messages: Message[]): void {
+	for (const message of messages) {
+		sessionManager.appendMessage(message);
+	}
+}
+
 function formatThread(thread: BtwDetails[]): string {
 	return thread
 		.map((item) => `User: ${item.question.trim()}\nAssistant: ${item.answer.trim()}`)
@@ -613,19 +619,17 @@ export default function (pi: ExtensionAPI) {
 			return null;
 		}
 
+		const sessionManager = SessionManager.inMemory(ctx.cwd);
+		seedSessionManager(sessionManager, buildSeedMessages(ctx, thread));
+
 		const { session } = await createAgentSession({
-			sessionManager: SessionManager.inMemory(),
+			sessionManager,
 			model: ctx.model,
 			modelRegistry: ctx.modelRegistry as AgentSession["modelRegistry"],
 			thinkingLevel: pi.getThinkingLevel() as SessionThinkingLevel,
 			tools: ["read", "bash", "edit", "write"],
 			resourceLoader: createBtwResourceLoader(ctx),
 		});
-
-		const seedMessages = buildSeedMessages(ctx, thread);
-		if (seedMessages.length > 0) {
-			session.agent.state.messages = seedMessages as typeof session.agent.state.messages;
-		}
 
 		const unsubscribe = session.subscribe((event: AgentSessionEvent) => {
 			if (!sideBusy || !pendingQuestion) {
