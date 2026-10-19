@@ -8,7 +8,7 @@ Use this skill when the user points you to a remote git repository (GitHub/GitLa
 The goal is to keep a reusable local checkout that is:
 - **stable** (predictable path)
 - **up to date** (periodic fetch + fast-forward when safe)
-- **efficient** (partial clone with `--filter=blob:none`, no repeated full clones)
+- **efficient** (reuse cached checkouts; prefer full JJ history for small repos, shallow Git for large ones)
 
 ## Cache location
 
@@ -19,6 +19,18 @@ Repositories are stored at:
 Example:
 
 `github.com/mitsuhiko/minijinja` → `~/.cache/checkouts/github.com/mitsuhiko/minijinja`
+
+## Clone strategy
+
+For new checkouts, prefer a full `jj git clone` if the repository is small enough.
+If the attempt exceeds the best-effort 100 MB limit, use a shallow Git clone instead:
+
+```bash
+python3 checkout.py <repo-url> <checkout-path>
+```
+
+Tell the user when history is shallow. This helper is standalone; the existing
+`checkout.sh` cache command below has not yet adopted this policy.
 
 ## Command
 
@@ -63,3 +75,5 @@ Prefer not to edit directly in the shared cache. Create a separate worktree or c
 ## Notes
 
 - `owner/repo` defaults to `github.com`.
+
+See [README.md](README.md) for clone options, reporting, and limitations.
