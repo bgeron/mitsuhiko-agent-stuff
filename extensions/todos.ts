@@ -223,6 +223,7 @@ export function sortTodos<T extends TodoFrontMatter>(todos: T[]): T[] {
 
 type TodoSearchField = {
 	text: string;
+	matchMode?: "id";
 	priority: number;
 	penalty: number;
 };
@@ -245,15 +246,19 @@ type TodoSearchSortKey = readonly [
 	originalIndex: number,
 ];
 
-function getTodoIdSearchText(todo: TodoFrontMatter): string {
-	return `${formatTodoId(todo.id)} ${todo.id}`;
+function getTodoIdSearchToken(token: string, id: string): string | null {
+	const normalized = normalizeTodoId(token).toLowerCase();
+	// Avoid accidental ID priority from words like "doc" fuzzy-matching the TODO- label.
+	return /^[a-f0-9]{2,}$/.test(normalized) && id.toLowerCase().includes(normalized)
+		? normalized
+		: null;
 }
 
 function buildTodoSearchFields(todo: TodoFrontMatter): TodoSearchField[] {
 	const tags = todo.tags.join(" ");
 	const fields: TodoSearchField[] = [
 		{ text: todo.title, priority: 0, penalty: 0 },
-		{ text: getTodoIdSearchText(todo), priority: 1, penalty: 10 },
+		{ text: todo.id, matchMode: "id", priority: 1, penalty: 10 },
 		{ text: tags, priority: 2, penalty: 25 },
 		{ text: todo.status, priority: 3, penalty: 40 },
 	];
@@ -269,7 +274,9 @@ function findBestTodoSearchFieldMatch(
 ): TodoSearchFieldMatch | null {
 	let bestMatch: TodoSearchFieldMatch | null = null;
 	for (const field of fields) {
-		const result = fuzzyMatch(token, field.text);
+		const query = field.matchMode === "id" ? getTodoIdSearchToken(token, field.text) : token;
+		if (!query) continue;
+		const result = fuzzyMatch(query, field.text);
 		if (!result.matches) continue;
 		const score = result.score + field.penalty;
 		const match: TodoSearchFieldMatch = { sortKey: [score, field.priority] };
@@ -288,8 +295,7 @@ function buildTodoSearchSortKey(
 	originalIndex: number,
 	currentSessionId?: string,
 ): TodoSearchSortKey {
-	const idSearchText = getTodoIdSearchText(todo);
-	const idBucket = tokens.every((token) => fuzzyMatch(token, idSearchText).matches);
+	const idBucket = tokens.every((token) => getTodoIdSearchToken(token, todo.id) !== null);
 	const currentSessionBoost =
 		currentSessionId && todo.assigned_to_session === currentSessionId
 			? TODO_SEARCH_CURRENT_SESSION_BOOST

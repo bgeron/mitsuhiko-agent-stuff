@@ -42,7 +42,7 @@ test("non-ID completion statuses always follow non-completed matches", () => {
 	]);
 });
 
-test("all-token fuzzy ID matches form the top bucket even when title scores better", () => {
+test("all-token ID substring matches form the top bucket even when title scores better", () => {
 	const todos = [
 		todo("eeeeeeee", "ab 12"),
 		todo("ab12cd34", "ab", { status: "closed", tags: ["12"] }),
@@ -51,14 +51,50 @@ test("all-token fuzzy ID matches form the top bucket even when title scores bett
 	assert.deepEqual(ids(filterTodos(todos, "ab 12")), ["ab12cd34", "eeeeeeee"]);
 });
 
+test("doc does not promote closed todos through the TODO label", () => {
+	const todos = [
+		todo("cccccccc", "Old docs", { status: "closed" }),
+		todo("aaaaaaaa", "Update docs"),
+		todo("ddddcccc", "Unrelated task"),
+	];
+
+	assert.deepEqual(ids(filterTodos(todos, "doc")), ["aaaaaaaa", "cccccccc"]);
+});
+
+test("ID searches accept case-insensitive substrings of at least two hex digits", () => {
+	const todos = [
+		todo("eeeeeeee", "ab"),
+		todo("12ab34cd", "Archived task", { status: "closed" }),
+	];
+
+	for (const query of ["ab", "AB", "TODO-Ab", "#aB", "#todo-AB", "34", "12ab34cd"]) {
+		const matches = filterTodos(todos, query);
+		assert.equal(matches[0]?.id, "12ab34cd", query);
+	}
+});
+
+test("single hex digits and noncontiguous ID characters do not count as ID matches", () => {
+	const todos = [todo("a0b1cd34", "Fix issue", { status: "closed" })];
+
+	for (const query of ["a", "TODO-a", "#a", "ab", "TODO-ab", "#ab", "ac", "b1d", "TODO-"]) {
+		assert.deepEqual(ids(filterTodos(todos, query)), [], query);
+	}
+
+	const titleMatches = [
+		todo("a0b1cd34", "ab", { status: "closed" }),
+		todo("eeeeeeee", "ab"),
+	];
+	assert.deepEqual(ids(filterTodos(titleMatches, "ab")), ["eeeeeeee", "a0b1cd34"]);
+});
+
 test("the ID bucket uses normal relevance without an assignment boost", () => {
 	const currentSession = "current-session";
 	const todos = [
-		todo("a0b1cd34", "weaker ID match", { assignedTo: currentSession }),
+		todo("0ab1cd34", "weaker ID match", { assignedTo: currentSession }),
 		todo("ab12cd34", "stronger ID match"),
 	];
 
-	assert.deepEqual(ids(filterTodos(todos, "ab", currentSession)), ["ab12cd34", "a0b1cd34"]);
+	assert.deepEqual(ids(filterTodos(todos, "ab", currentSession)), ["ab12cd34", "0ab1cd34"]);
 });
 
 test("matching only some tokens against the ID does not exempt a completed todo", () => {
